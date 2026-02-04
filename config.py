@@ -15,7 +15,7 @@ class ScrapeConfig:
     # -------------------------
     # General
     # -------------------------
-    data_dir: str = "data"
+    data_dir: str = "/Users/bikal/OneDrive/Nepal_Job_Market_Live_Data/xlsx"
     headless: bool = False
 
     # -------------------------
