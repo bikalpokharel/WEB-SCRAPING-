@@ -92,9 +92,13 @@ def get_output_paths(portal_name: str) -> Dict[str, str]:
     data_dir = CONFIG.data_dir
     os.makedirs(data_dir, exist_ok=True)
 
+    # Internal (non-shared) audit files
+    internal_dir = os.path.join(data_dir, "_internal")
+    os.makedirs(internal_dir, exist_ok=True)
+
     return {
         "xlsx": os.path.join(data_dir, f"{portal_name}_jobs.xlsx"),
-        "urls": os.path.join(data_dir, f"{portal_name}_urls_latest.txt"),
+        "urls": os.path.join(internal_dir, f"{portal_name}_urls_latest.txt"),
     }
 
 
