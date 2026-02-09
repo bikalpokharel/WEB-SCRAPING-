@@ -1,13 +1,7 @@
-"""
-config.py
-Central configuration for the Nepal job scraping pipeline.
-
-All tunable constants live here to keep the codebase clean,
-readable, and easy for other developers to understand.
-"""
-
+# config.py
 from dataclasses import dataclass
 from typing import Optional
+import os
 
 
 @dataclass(frozen=True)
@@ -15,13 +9,13 @@ class ScrapeConfig:
     # -------------------------
     # General
     # -------------------------
-    data_dir: str = "/Users/bikal/OneDrive/Nepal_Job_Market_Live_Data/xlsx"
+    data_dir: str = "/Users/bikal/Library/CloudStorage/OneDrive-Personal/Nepal_Job_Market_Live_Data/xlsx"
     headless: bool = False
 
     # -------------------------
     # Collection
     # -------------------------
-    pages: int = 20
+    pages: int = 50
     limit: int = 400
 
     # -------------------------
@@ -36,12 +30,21 @@ class ScrapeConfig:
     watch_default_interval_sec: int = 600
 
     # -------------------------
-    # LinkedIn export input (CSV/XLSX)
+    # LinkedIn (IMPORTANT)
     # -------------------------
-    linkedin_exports_dir: str = "data/linkedin_exports"
-    linkedin_export_pattern: str = "*.csv"  # newest file wins (also supports xlsx/xls via linkedin_export.py)
+    linkedin_use_chrome_profile: bool = True
 
-    # Optional explicit mapping overrides (use if auto-detect fails)
+    chrome_profile_path: str = "data/chrome_profiles/linkedin"
+    chrome_profile_dir: str = "Default"
+
+    # Optional: only if you want to attempt username/password login (not used currently)
+    linkedin_email: str = os.getenv("LINKEDIN_EMAIL", "")
+    linkedin_password: str = os.getenv("LINKEDIN_PASSWORD", "")
+
+    # LinkedIn export input (CSV/XLSX)
+    linkedin_exports_dir: str = "data/linkedin_exports"
+    linkedin_export_pattern: str = "*.csv"
+
     linkedin_col_title: Optional[str] = None
     linkedin_col_company: Optional[str] = None
     linkedin_col_location: Optional[str] = None
@@ -50,5 +53,4 @@ class ScrapeConfig:
     linkedin_col_description: Optional[str] = None
 
 
-# ✅ Single shared config instance (run_pipeline imports this)
 CONFIG = ScrapeConfig()
