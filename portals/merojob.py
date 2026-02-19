@@ -1,234 +1,308 @@
+from __future__ import annotations
+
+import re
 import time
-from typing import List, Dict, Optional
-from urllib.parse import urljoin, urlparse
+from typing import Dict, List, Optional
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-
-from config import CONFIG
-from scraper_core import (
-    clean, clean_or_non,
-    infer_work_mode, now_iso, classify_it_non_it,
-    parse_experience_years, parse_salary
+from selenium.common.exceptions import (
+    TimeoutException,
+    WebDriverException,
+    InvalidSessionIdException,
 )
 
-
+from scraper_core import clean, now_iso, infer_work_mode, classify_it_non_it, infer_country
 
 BASE = "https://merojob.com"
-LISTING_URL = "https://merojob.com/search?page={page}"
+SEARCH = f"{BASE}/search"
 
 
-def collect_job_urls(driver, pages: int = 3, limit: int = 60) -> List[str]:
-    """
-    Collect job detail URLs from MeroJob listing pages.
+# -------------------------
+# Driver health + safe navigation
+# -------------------------
+def _driver_alive(driver) -> bool:
+    try:
+        _ = driver.current_url
+        return True
+    except Exception:
+        return False
 
-    Strategy:
-      1) Prefer job-card links (more coverage + less noise)
-      2) Apply strict filtering to keep only real job detail slugs
-      3) Deduplicate while preserving order
-      4) Fallback to all anchors if selectors change
-    """
+
+def _safe_get(driver, url: str, timeout: int = 30) -> None:
+    if not _driver_alive(driver):
+        raise RuntimeError("DRIVER_DIED")
+
+    try:
+        driver.set_page_load_timeout(timeout)
+        driver.get(url)
+
+        # quick sanity: body exists
+        try:
+            WebDriverWait(driver, 8).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+        except Exception:
+            pass
+
+        # detect common block pages
+        title = (driver.title or "").lower()
+        body_text = ""
+        try:
+            body_text = (driver.find_element(By.TAG_NAME, "body").text or "").lower()
+        except Exception:
+            body_text = ""
+
+        if ("attention required" in title) or ("cloudflare" in title) or ("verify you are human" in body_text):
+            raise RuntimeError("BLOCKED_OR_CHALLENGE")
+
+    except (InvalidSessionIdException, WebDriverException) as e:
+        msg = str(e).lower()
+        if ("invalid session id" in msg) or ("disconnected" in msg) or ("not connected to devtools" in msg):
+            raise RuntimeError("DRIVER_DIED") from e
+        raise
+
+
+def _abs_url(href: str) -> str:
+    href = (href or "").strip()
+    if not href:
+        return ""
+    if href.startswith("http"):
+        return href
+    if href.startswith("/"):
+        return BASE + href
+    return BASE + "/" + href
+
+
+def _text_after_label(full_text: str, label: str) -> Optional[str]:
+    if not full_text:
+        return None
+    m = re.search(rf"{re.escape(label)}\s*([A-Za-z]{{3,}}\s+\d{{1,2}},\s+\d{{4}})", full_text)
+    return clean(m.group(1)) if m else None
+
+
+def _pick_text(driver, css_list: List[str]) -> Optional[str]:
+    for sel in css_list:
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, sel)
+            t = clean(el.text)
+            if t:
+                return t
+        except Exception:
+            continue
+    return None
+
+
+def _pick_attr(driver, css_list: List[str], attr: str) -> Optional[str]:
+    for sel in css_list:
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, sel)
+            v = clean(el.get_attribute(attr))
+            if v:
+                return v
+        except Exception:
+            continue
+    return None
+
+
+# -------------------------
+# 1) COLLECT URLS (List page)
+# -------------------------
+def collect_job_urls(
+    driver,
+    pages: int = 1,
+    limit: int = 200,
+    per_page: int = 6,
+    sleep_sec: float = 0.5,
+) -> List[str]:
+    pages = max(1, int(pages or 1))
+    limit = int(limit or 200)
+    per_page = int(per_page or 6)
+    sleep_sec = float(sleep_sec or 0.0)
+
     urls: List[str] = []
     seen = set()
 
-    blocked_slugs = {
-        "company", "companies",
-        "designation", "designations",
-        "job-level", "job-levels",
-        "category", "categories",
-        "location", "locations",
-        "search", "blog", "training", "events",
-        "about", "contact", "faq",
-        "login", "register",
-        "employer", "jobseeker",
-        "services", "skill",
-        "employer-zone",
-        "terms-and-conditions", "privacy-policy",
-    }
+    for page in range(1, pages + 1):
+        page_url = f"{SEARCH}?limit={per_page}&offset={page}"
+        print(f"[MEROJOB] Collecting page {page}/{pages}: {page_url}")
 
-    # These selectors try to target job title links in listing cards
-    job_link_selectors = [
-        # common job-title anchor patterns
-        "h1 a[href]", "h2 a[href]", "h3 a[href]",
-        "a.job-title[href]",
-        # anchors inside possible listing containers
-        ".search-list a[href]",
-        ".job-card a[href]",
-        ".card a[href]",
-        "main a[href]",
-    ]
+        _safe_get(driver, page_url)
 
-    def normalize_job_url(href: str) -> Optional[str]:
-        """Return standardized job detail URL or None if not valid."""
-        if not href:
-            return None
+        try:
+            WebDriverWait(driver, 25).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'h3 a[href^="/"]'))
+            )
+        except TimeoutException:
+            print("[MEROJOB] No job links found (timeout). Skipping page.")
+            if sleep_sec:
+                time.sleep(sleep_sec)
+            continue
 
-        href = urljoin(BASE, href).split("#")[0].strip()
+        a_tags = driver.find_elements(By.CSS_SELECTOR, 'h3 a[href^="/"]')
 
-        if not href.startswith(BASE):
-            return None
-
-        path = urlparse(href).path.strip("/")
-        if not path:
-            return None
-
-        first_segment = path.split("/")[0].strip()
-
-        # rule 1: remove known routes
-        if first_segment.lower() in blocked_slugs:
-            return None
-
-        # rule 2: job slugs almost always contain "-" (e.g., architect-525)
-        if "-" not in first_segment:
-            return None
-
-        # rule 3: avoid tiny junk
-        if len(first_segment) < 8:
-            return None
-
-        return f"{BASE}/{first_segment}"
-
-    for p in range(1, pages + 1):
-        listing_url = LISTING_URL.format(page=p)
-        driver.get(listing_url)
-        time.sleep(CONFIG.sleep_listing_sec)
-
-        print(f"[Listing] {listing_url}  (current={driver.current_url})")
-
-        anchors = []
-        for sel in job_link_selectors:
-            found = driver.find_elements(By.CSS_SELECTOR, sel)
-            if found:
-                anchors.extend(found)
-
-        # fallback if site changes markup
-        if not anchors:
-            anchors = driver.find_elements(By.CSS_SELECTOR, "a[href]")
-
-        for a in anchors:
-            raw_href = (a.get_attribute("href") or "").strip()
-            job_url = normalize_job_url(raw_href)
-            if not job_url:
+        for a in a_tags:
+            href = (a.get_attribute("href") or "").strip()
+            if not href:
+                continue
+            if "/employer/" in href:
+                continue
+            if "/search" in href:
                 continue
 
-            if job_url not in seen:
-                seen.add(job_url)
-                urls.append(job_url)
+            u = _abs_url(href.replace(BASE, "")) if href.startswith(BASE) else _abs_url(href)
+            if u and u not in seen:
+                seen.add(u)
+                urls.append(u)
 
             if len(urls) >= limit:
-                return urls[:limit]
+                break
 
-        time.sleep(CONFIG.sleep_between_pages_sec)
+        if len(urls) >= limit:
+            break
 
-    return urls[:limit]
+        if sleep_sec:
+            time.sleep(sleep_sec)
+
+    return urls
 
 
-def parse_job_detail(driver, url: str) -> Optional[Dict]:
-    """
-    Parse a job detail page and return a record dict.
-    Returns None if page does not look like a job posting.
-    """
-    import re
-
-    driver.get(url)
-
-    WebDriverWait(driver, 15).until(
-        EC.presence_of_element_located((By.TAG_NAME, "body"))
-    )
-
-    text = driver.find_element(By.TAG_NAME, "body").text or ""
-
-    # Validate it's a real job page
-    if "Published on:" not in text and "Apply Before:" not in text:
+# -------------------------
+# 2) PARSE JOB DETAIL PAGE
+# -------------------------
+def parse_job_detail(driver, job_url: str) -> Optional[Dict]:
+    job_url = (job_url or "").strip()
+    if not job_url:
         return None
 
-    def rex(pattern: str) -> Optional[str]:
-        m = re.search(pattern, text, flags=re.IGNORECASE)
-        return clean(m.group(1)) if m else None
+    print(f"[MEROJOB] Parsing: {job_url}")
+    _safe_get(driver, job_url)
 
-    # Title
-    designation = None
     try:
-        designation = clean(driver.find_element(By.TAG_NAME, "h1").text)
+        WebDriverWait(driver, 25).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "h1"))
+        )
+    except TimeoutException:
+        print("[MEROJOB] h1 not found (timeout). Skipping.")
+        return None
+
+    try:
+        page_text = driver.find_element(By.TAG_NAME, "body").text or ""
     except Exception:
-        designation = rex(r"\n([A-Za-z0-9][^\n]{3,120})\n\s*Views:\s*\d+")
+        page_text = ""
 
-    date_posted = rex(r"Published on:\s*([A-Za-z]{3,}\s+\d{1,2},\s+\d{4})")
-    deadline = rex(r"Apply Before:\s*([A-Za-z]{3,}\s+\d{1,2},\s+\d{4})")
+    title = _pick_text(driver, ["h1"])
 
-    level = rex(r"\|\s*(Entry Level|Mid Level|Senior Level|Top Level)\s*\|")
-    job_type = rex(r"\|\s*(Full Time|Part Time|Contract|Temporary|Freelance|Internship|Traineeship|Volunteer)\s*\|")
+    posted_date = _text_after_label(page_text, "Published on:")
 
-    location = rex(r"Vacancy:\s*\d+\s*\|\s*([^\|]+)\|\s*Experience:")
-    experience = rex(r"Experience:\s*([^\|]+)\|")
-    salary = rex(r"Offered Salary:\s*([^\n]+)")
-    exp_min, exp_max = parse_experience_years(experience or "")
-    sal_min, sal_max, sal_currency, sal_period = parse_salary(salary or "")
+    company_link = _pick_attr(driver, ['a[href*="/employer/"]'], "href")
+    if company_link and company_link.startswith("/"):
+        company_link = BASE + company_link
 
+    company = _pick_text(driver, ['a[href*="/employer/"]'])
+    if company:
+        company = clean(company.split("\n")[0])
 
-    industry = rex(
-        r"\n([A-Za-z][A-Za-z0-9\s\/,&\-\.\+]+)\n\s*\+\d+\s*more\s*\n\s*\|\s*\n\s*(Entry Level|Mid Level|Senior Level|Top Level)\b"
+    location = _pick_text(driver, [
+        '[data-sentry-component="JobHeader"] span',
+        "span.text-muted",
+    ])
+    if not location:
+        for pat in [
+            r"\bJob Location\s*:\s*([^\n]+)",
+            r"\bLocation\s*:\s*([^\n]+)",
+            r"\bJob Location\s*([^\n]+)",
+        ]:
+            m = re.search(pat, page_text, flags=re.I)
+            if m:
+                location = clean(m.group(1))
+                break
+
+    # ✅ FIX 1: Always safe country (never empty)
+    country = infer_country(location or "", default="Nepal") or "Nepal"
+
+    employment_type = None
+    for k in ["Full Time", "Part Time", "Contract", "Internship", "Freelance"]:
+        if re.search(rf"\b{re.escape(k)}\b", page_text, flags=re.I):
+            employment_type = k
+            break
+
+    position = None
+    for k in ["Entry Level", "Mid Level", "Senior Level", "Top Level"]:
+        if re.search(rf"\b{re.escape(k)}\b", page_text, flags=re.I):
+            position = k
+            break
+
+    commitment = None
+    m_exp = re.search(r"Experience\s*:\s*([^\n]+)", page_text, flags=re.I)
+    if m_exp:
+        commitment = clean(m_exp.group(1))
+
+    compensation = None
+    m_sal = re.search(r"Offered Salary\s*:\s*([^\n]+)", page_text, flags=re.I)
+    if m_sal:
+        compensation = clean(m_sal.group(1))
+
+    skills = None
+    if page_text:
+        idx = page_text.lower().find("skills required")
+        if idx != -1:
+            chunk = page_text[idx: idx + 800]
+            candidates = re.findall(r"\n([A-Za-z0-9\+\#\.\-\/ ]{2,40})\n", chunk)
+            cleaned = []
+            seen = set()
+            for c in candidates:
+                c2 = clean(c)
+                if not c2:
+                    continue
+                if c2.lower() in {"skills required", "apply now", "job description"}:
+                    continue
+                if c2 not in seen:
+                    seen.add(c2)
+                    cleaned.append(c2)
+            if cleaned:
+                skills = ", ".join(cleaned[:30])
+
+    work_mode = infer_work_mode(page_text)
+
+    job_id = job_url.rstrip("/").split("/")[-1] if "/" in job_url else None
+
+    category_primary = classify_it_non_it(
+        designation=title or "",
+        industry="",
+        full_text=page_text or "",
     )
 
-    if not industry:
-        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        pub_idx = next((i for i, ln in enumerate(lines) if "Published on:" in ln), None)
-        if pub_idx is not None and pub_idx + 1 < len(lines):
-            possible = lines[pub_idx + 1]
-            if "/" in possible:
-                industry = clean(possible)
+    row = {
+        "job_id": job_id,
+        "title": title,
+        "company": company,
+        "company_link": company_link,
+        "location": location,
+        "country": country,  # ✅ NEW field kept
+        "posted_date": posted_date,
+        "num_applicants": None,
+        "work_mode": work_mode,
+        "employment_type": employment_type,
+        "position": position,
+        "type": None,
+        "compensation": compensation,
+        "commitment": commitment,
+        "skills": skills,
+        "category_primary": category_primary,
+        "job_url": job_url,
+        "source": "merojob",
+        "scraped_at": now_iso(),
+    }
 
-    work_mode = infer_work_mode(text)
-
-    category_primary = classify_it_non_it(designation or "", industry or "", text or "")
-
-    return {
-    # -------------------------
-    # Source & classification
-    # -------------------------
-    "source": "MeroJob",
-    "category_primary": clean_or_non(category_primary),
-
-    # -------------------------
-    # Core job metadata
-    # -------------------------
-    "industry": clean_or_non(industry),
-    "designation": clean_or_non(designation),
-    "level": clean_or_non(level),
-
-    # -------------------------
-    # Experience (raw + normalized)
-    # -------------------------
-    "experience_raw": clean(experience),
-    "experience_min_years": exp_min,
-    "experience_max_years": exp_max,
-
-    # -------------------------
-    # Work mode
-    # -------------------------
-    "onsite_hybrid_remote": clean_or_non(work_mode),
-
-    # -------------------------
-    # Salary (raw + normalized)
-    # -------------------------
-    "salary_raw": clean(salary),
-    "salary_min": sal_min,
-    "salary_max": sal_max,
-    "salary_currency": sal_currency,
-    "salary_period": sal_period,
-
-    # -------------------------
-    # Other details
-    # -------------------------
-    "location": clean_or_non(location),
-    "deadline": clean_or_non(deadline),
-    "job_type": clean_or_non(job_type),
-    "date_posted": clean_or_non(date_posted),
-
-    # -------------------------
-    # Tracking
-    # -------------------------
-    "job_url": url,
-    "scraped_at": now_iso(),
-}
+    # ✅ FIX 2: include "country" in ordered_keys so it doesn’t get dropped
+    ordered_keys = [
+        "job_id", "title", "company", "company_link",
+        "location", "country",
+        "posted_date", "num_applicants", "work_mode",
+        "employment_type", "position", "type",
+        "compensation", "commitment", "skills",
+        "category_primary", "job_url", "source", "scraped_at"
+    ]
+    return {k: row.get(k) for k in ordered_keys}

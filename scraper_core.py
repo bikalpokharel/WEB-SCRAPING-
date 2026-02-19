@@ -94,8 +94,9 @@ def _build_chrome_options(headless: bool) -> Options:
 
 def make_linkedin_driver(headless: bool, profile_path: str, profile_dir: str) -> webdriver.Chrome:
     """
-    ✅ Use a dedicated Selenium Chrome profile folder.
-    This avoids profile locks/crashes from your real Chrome.
+    LinkedIn driver:
+    - Try dedicated profile first (persistent login)
+    - If it fails (profile lock), fallback to temp profile (still works, but may need login)
     """
     opts = Options()
     opts.page_load_strategy = "eager"
@@ -109,17 +110,42 @@ def make_linkedin_driver(headless: bool, profile_path: str, profile_dir: str) ->
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-blink-features=AutomationControlled")
 
-    # ✅ Dedicated Selenium profile
+    # Try dedicated profile first
     os.makedirs(profile_path, exist_ok=True)
     opts.add_argument(f"--user-data-dir={profile_path}")
     opts.add_argument(f"--profile-directory={profile_dir}")
 
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=opts,
-    )
-    driver.set_page_load_timeout(90)
-    return driver
+    try:
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=opts,
+        )
+        driver.set_page_load_timeout(90)
+        return driver
+    except Exception as e:
+        print("[WARN] Chrome session failed with dedicated profile (likely locked).")
+        print("[WARN] Falling back to a temporary Chrome profile. Details:", e)
+
+        # Fallback: temp profile
+        tmp_profile = tempfile.mkdtemp(prefix="linkedin_tmp_profile_")
+        opts2 = Options()
+        opts2.page_load_strategy = "eager"
+        if headless:
+            opts2.add_argument("--headless=new")
+        opts2.add_argument("--window-size=1400,900")
+        opts2.add_argument("--disable-gpu")
+        opts2.add_argument("--no-sandbox")
+        opts2.add_argument("--disable-dev-shm-usage")
+        opts2.add_argument("--disable-blink-features=AutomationControlled")
+        opts2.add_argument(f"--user-data-dir={tmp_profile}")
+        opts2.add_argument("--profile-directory=Default")
+
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=opts2,
+        )
+        driver.set_page_load_timeout(90)
+        return driver
 
 def clean(s: Optional[str]) -> Optional[str]:
     if s is None:
@@ -140,38 +166,82 @@ def now_iso() -> str:
 # --- (rest of your functions remain unchanged) ---
 def infer_work_mode(text: str) -> Optional[str]:
     t = (text or "").lower()
-    if any(k in t for k in ["remote", "work from home", "wfh"]):
-        return "Remote"
+
     if "hybrid" in t:
         return "Hybrid"
-    if "on-site" in t or "onsite" in t:
+    if any(k in t for k in ["remote", "work from home", "wfh"]):
+        return "Remote"
+    if any(k in t for k in ["on-site", "onsite", "on site"]):
         return "On-site"
     return None
+
+def infer_country(location_text: str | None, default: str = "Nepal") -> str:
+    """
+    Very simple country inference.
+    For MeroJob/JobsNepal, defaulting to Nepal is usually correct.
+    You can expand this later with more rules.
+    """
+    t = (location_text or "").lower().strip()
+
+    # obvious Nepal matches
+    if any(k in t for k in ["nepal", "kathmandu", "lalitpur", "bhaktapur", "pokhara", "butwal", "biratnagar", "dharan"]):
+        return "Nepal"
+
+    # if location looks empty/unknown, still default Nepal
+    if not t or t in {"non", "none", "na", "n/a"}:
+        return default
+
+    # fallback default
+    return default
 
 
 def classify_it_non_it(designation: str = "", industry: str = "", full_text: str = "") -> str:
     text = f"{designation} {industry} {full_text}".lower()
-    if re.search(r"\bit\b", text):
-        return "IT"
 
-    it_keywords = [
-        "information technology", "software", "developer", "engineer",
-        "backend", "frontend", "full stack", "fullstack", "devops",
-        "cloud", "aws", "azure", "gcp", "kubernetes", "docker",
-        "data engineer", "data scientist", "machine learning", "ml", "ai",
-        "cyber security", "cybersecurity", "security engineer",
-        "qa", "test engineer", "automation", "sdet",
-        "network", "system admin", "sysadmin", "database", "dba",
-        "python", "java", "javascript", "react", "node", "django", "flask",
-        "php", "laravel", "dotnet", ".net", "c#", "c++", "golang", "go",
-        "android", "ios", "mobile app", "app developer",
-        "ui/ux", "ux", "ui designer", "product designer",
-        "technical support", "helpdesk", "support engineer",
+    # ✅ longer phrases are safe as substring matches
+    phrase_keywords = [
+        "information technology",
+        "software development", "software engineer",
+        "full stack", "fullstack",
+        "data engineer", "data scientist",
+        "machine learning", "cybersecurity", "cyber security",
+        "system administrator", "technical support", "help desk", "helpdesk",
+        "cloud computing", "devops",
+        "rest api", "api development",
     ]
-    if any(k in text for k in it_keywords):
-        return "IT"
-    return "Non-IT"
 
+    # ✅ single words must be WHOLE WORD matches (avoid false positives)
+    word_keywords = [
+        "developer", "programmer", "engineer",
+        "python", "java", "javascript", "react", "node", "django", "flask",
+        "php", "laravel",
+        "docker", "kubernetes",
+        "aws", "azure", "gcp",
+        "network", "database", "sql",
+        "ai", "ml", "qa", "sdet",
+    ]
+
+    special_patterns = [
+        r"\.net\b",
+        r"\bc\+\+\b",
+        r"\bc#\b",
+        r"\bgolang\b",
+        r"\bgo\b",
+    ]
+
+    for k in phrase_keywords:
+        if k in text:
+            return "IT"
+
+    for w in word_keywords:
+        if re.search(rf"\b{re.escape(w)}\b", text):
+            return "IT"
+
+    for pat in special_patterns:
+        if re.search(pat, text):
+            return "IT"
+
+    return "Non-IT"
 
 def normalize_experience_years(experience_raw: Optional[str]) -> Tuple[Optional[float], Optional[float]]:
     if not experience_raw:
