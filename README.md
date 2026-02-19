@@ -1,238 +1,308 @@
-# Nepal Job Market Scraping Pipeline (Multi-Portal, Incremental, Production-Grade)
+Nepal Job Market Scraping Pipeline (Multi-Portal, Incremental UPSERT, Watch Mode)
 
-A modular, production-style data pipeline to collect job postings from Nepal job portals using **Python + Selenium + pandas**, with **incremental (idempotent) Excel updates**, **multi-portal support**, and **watch mode** for continuous monitoring.
+A modular, production-style pipeline to collect job postings from multiple portals using Python + Selenium + pandas, with incremental UPSERT updates to Excel, multi-portal architecture, and watch mode for continuous refresh. Includes optional Dash dashboard for live charts.
 
----
+✅ Key Features
+Multi-portal architecture
 
-## ✅ Features
+Add new portals easily (each portal lives in portals/)
 
-- **Multi-portal architecture** (add portals easily)
-- **Two portal modes**
-  - **Selenium mode** (scrape listing pages + job detail pages)
-  - **Rows mode** (CSV/API/export → normalized records, no browser)
-- **Incremental updates (idempotent)**
-  - Excel files are **never overwritten**
-  - Only **new jobs** are appended (dedupe by `job_url`)
-- **Normalized schema**
-  - salary, experience, work-mode inference, IT vs Non-IT classification
-- **Watch mode**
-  - auto re-scrapes portals every N seconds
-- **Per-portal logging**
-  - rotating logs under `logs/`
+Two portal styles (supported)
 
----
+Selenium portal (listing → detail scraping)
 
-## 📁 Project Structure
+collect_job_urls()
 
+parse_job_detail()
+
+Rows portal (already-structured data, CSV/API)
+
+collect_rows() (optional mode)
+
+Incremental storage (UPSERT = update + insert)
+
+Excel files are never overwritten
+
+Existing jobs are updated when the same ID appears again
+
+New jobs are inserted automatically
+
+Works well in watch mode (re-scrape repeatedly without duplicates)
+
+Normalized schema
+
+Work mode inference (remote/hybrid/onsite)
+
+IT vs Non-IT classification
+
+Country inference added for MeroJob, JobsNepal, LinkedIn
+
+Saved consistently to Excel
+
+Watch mode
+
+Re-runs portals every N seconds
+
+Supports autosave batching (LinkedIn can autosave every X rows)
+
+Logging
+
+Per-portal logs under logs/ (helps debug each portal independently)
+
+📁 Project Structure
 Data_scraping/
 ├── config.py
 ├── scraper_core.py
 ├── run_pipeline.py
 ├── portals/
-│ ├── merojob.py
-│ ├── jobsnepal.py
-│ └── linkedin_export.py
+│   ├── merojob.py
+│   ├── jobsnepal.py
+│   └── linkedin.py                # ✅ Selenium LinkedIn multi-country
+├── dashboard/
+│   └── app.py                     # ✅ Dash dashboard
 ├── data/
-│ ├── merojob_jobs.xlsx
-│ ├── jobsnepal_jobs.xlsx
-│ ├── linkedin_jobs.xlsx
-│ └── *_urls_latest.txt
+│   ├── merojob_jobs.xlsx
+│   ├── jobsnepal_jobs.xlsx
+│   ├── linkedin_jobs.xlsx
+│   └── *_urls_latest.txt
 ├── logs/
-│ └── *.log
+│   └── *.log
 └── requirements.txt
 
+⚙️ Requirements
 
----
+Python 3.10+
 
-## ⚙️ Requirements
+Google Chrome
 
-- Python **3.10+** recommended
-- Google Chrome installed
-- macOS / Linux / Windows supported
+Selenium + ChromeDriver (webdriver-manager recommended)
 
----
-
-## 🚀 Setup (Terminal)
-
-From inside your project folder:
-
-```bash
+🚀 Setup
 cd /path/to/Data_scraping
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+
 ▶️ Run the Pipeline
+
 Run one portal:
 
 python run_pipeline.py --portal merojob
 python run_pipeline.py --portal jobsnepal
 python run_pipeline.py --portal linkedin
+
+
 Run all portals:
 
 python run_pipeline.py --portal all
+
 🔁 Watch Mode (Continuous Monitoring)
+
 Re-run portals every 10 minutes (600 seconds):
 
 python run_pipeline.py --watch --interval 600 --portal all
+
+
 Stop with:
 
 Ctrl + C
+
 📦 Output Files
-All outputs go to data/.
+
+All outputs go to your configured Excel directory (from config.py).
 
 Each portal produces:
 
-<portal>_jobs.xlsx → normalized job dataset
+data/<portal>_jobs.xlsx → normalized dataset
 
-<portal>_urls_latest.txt → latest scraped URLs for auditing/debugging
+data/<portal>_urls_latest.txt → URL audit/debug
 
-Example:
+Examples:
 
 data/jobsnepal_jobs.xlsx
+
 data/jobsnepal_urls_latest.txt
+
 🧠 Normalized Schema (Columns)
-Every saved job row is normalized into a consistent schema:
 
-source
+Your saved Excel rows are normalized into a consistent set of columns (example):
 
-category_primary (IT / Non-IT)
+job_id
 
-industry
+title
 
-designation
+company
 
-company (some portals)
-
-level
-
-experience_raw
-
-experience_min_years
-
-experience_max_years
-
-salary_raw
-
-salary_min
-
-salary_max
-
-salary_currency
-
-salary_period
-
-onsite_hybrid_remote
+company_link
 
 location
 
-deadline
+country ✅ (new)
 
-job_type
+posted_date
 
-date_posted
+num_applicants
+
+work_mode
+
+employment_type
+
+position
+
+type
+
+compensation
+
+commitment
+
+skills
+
+category_primary (IT / Non-IT)
 
 job_url
 
+source
+
 scraped_at
 
-Missing values are stored as "Non" by design.
+Missing values are stored as "Non" by design (as you implemented).
+
+🌍 LinkedIn: Multi-Country Selenium Scraping (Current System)
+
+✅ Your pipeline now supports scraping LinkedIn across multiple countries using geoId.
+
+Configure targets in config.py
+linkedin_targets = (
+  {"country": "Nepal", "geoId": "104630404"},
+  {"country": "United States", "geoId": "103644278"},
+  ...
+)
+
+What LinkedIn scraper does
+
+Loops through each target country
+
+Builds listing URLs using geoId
+
+Collects job IDs and opens job details
+
+Adds country into every output row
+
+Saves incrementally via UPSERT (optionally autosave batches)
 
 🧩 Portal Modes Explained
-1) Selenium Mode
-Used for portals that require browsing pages (MeroJob, JobsNepal).
+1) Selenium Mode (MeroJob, JobsNepal, LinkedIn)
 
-Each Selenium portal must implement:
+Each portal implements:
 
-collect_job_urls(driver, pages, limit) -> List[str]
+collect_job_urls(driver, pages, limit, ...) -> List[str]
 
 parse_job_detail(driver, url) -> Dict | None
 
-2) Rows Mode
-Used for portals that can be imported from CSV/Excel/API (LinkedIn export).
+2) Rows Mode (Optional / future)
 
-Rows portal must implement:
+For CSV/API sources:
 
 collect_rows(CONFIG) -> List[Dict]
 
-🔗 LinkedIn Export Setup
-This pipeline does NOT scrape LinkedIn directly.
-Instead, you export your saved jobs/applications and place the file into:
+📊 Dashboard (Dash)
 
-data/linkedin_exports/
-Steps (Terminal)
-Ensure folder exists:
+Your dashboard is under:
 
-mkdir -p data/linkedin_exports
-Copy your export into it (example from Downloads):
+dashboard/app.py
 
-cp ~/Downloads/*.csv data/linkedin_exports/
-Run:
 
-python run_pipeline.py --portal linkedin
-Notes
-If the export lacks job URLs, the pipeline generates a stable synthetic ID like:
-linkedin://<hash>
+Your component IDs (confirmed via grep):
 
-If your export columns don’t match expected names, use the mapping override fields in config.py.
+status
 
-🛠 Configuration (config.py)
-All tuning is in config.py via a shared CONFIG object.
+interval
 
-Key settings:
+jobs_per_portal
 
-pages, limit
+it_nonit_by_portal
 
-headless (true/false)
+top_locations
 
-watch_default_interval_sec
+employment_type
 
-LinkedIn export folder + pattern
+scrape_trend
 
-LinkedIn column mapping overrides (optional)
+Run dashboard:
 
-Example (override LinkedIn mapping):
+python dashboard/app.py
 
-linkedin_col_title = "job_title"
-linkedin_col_company = "company_name"
-linkedin_col_location = "city"
+
+Important fixes you already applied / must keep:
+
+Dash: app.run(...) not app.run_server(...)
+
+Pandas frequency: use "h" not "H" for .dt.floor("h") (new pandas behavior)
+
 🧾 Logging
+
 Logs are stored in:
 
 logs/<portal>.log
+
+
 Examples:
 
 tail -n 50 logs/jobsnepal.log
 tail -n 50 logs/linkedin.log
-🧰 Troubleshooting
-1) ImportError: cannot import name 'CONFIG' from 'config'
-Fix: ensure config.py ends with:
 
-CONFIG = ScrapeConfig()
-2) LinkedIn: “No export file found”
-Make sure a CSV/XLSX exists in:
+🛠 Troubleshooting
+1) Dash error: app.run_server obsolete
 
-ls -lah data/linkedin_exports
-Then run again.
+Fix in dashboard/app.py:
 
-3) Selenium issues / ChromeDriver problems
-Update dependencies:
+app.run(debug=True, host="127.0.0.1", port=8050)
 
-pip install -U selenium webdriver-manager
-If headless mode causes portal issues, disable headless in config:
+2) Pandas error: Invalid frequency "H"
 
-headless = False
+Use:
+
+dt.floor("h")
+
+3) Excel error: BadZipFile: File is not a zip file
+
+This happens when the .xlsx file is corrupted (often due to interruption while saving).
+Fix:
+
+Delete the corrupted Excel file (or rename it as backup)
+
+Re-run the pipeline so it regenerates a clean .xlsx
+
+4) Selenium error: InvalidSessionIdException
+
+Driver got killed/crashed or session expired.
+Fix:
+
+Recreate the driver for each run (recommended)
+
+Avoid long idle sessions
+
+Ensure driver.quit() runs in finally
+
+🔐 Security & Long-Run Risks (What you should know)
+
+LinkedIn is sensitive to automation → higher risk of rate-limit, authwall, temporary blocks.
+
+Store credentials using environment variables, not hardcoded.
+
+Prefer using a logged-in Chrome profile (less password handling).
+
+Don’t upload raw datasets publicly (may contain tracked URLs / identifiable patterns).
+
+Keep your OneDrive output path safe (avoid exposing links publicly).
+
 🧱 Adding a New Portal
-Create a new portal module:
+
+Create:
 
 portals/<newportal>.py
-Implement either Selenium mode functions or rows mode.
 
-Register it in run_pipeline.py inside PORTALS:
 
-PORTALS["newportal"] = {
-  "mode": "selenium",
-  "collect": new_collect,
-  "parse": new_parse,
-  "pages": CONFIG.pages,
-  "limit": CONFIG.limit,
-}
+Implement selenium or rows mode functions
+
+Register in run_pipeline.py under PORTALS

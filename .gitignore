@@ -1,16 +1,29 @@
-# Python cache
-__pycache__/
-*.pyc
-
 # Virtual env
 venv/
 
-# Data outputs
-data/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
 # macOS
 .DS_Store
 
-#logs
+# Logs
 logs/
+*.log
 
+# Data outputs
+data/
+*.xlsx
+*_urls_latest.txt
+
+# LinkedIn exports
+data/linkedin_exports/
+
+# OneDrive path outputs
+Library/CloudStorage/
+
+# Chrome profile if any
+chrome_profile/
