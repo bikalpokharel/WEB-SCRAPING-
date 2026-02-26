@@ -10,7 +10,15 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-from scraper_core import clean, clean_or_non, now_iso, infer_work_mode, infer_country
+from scraper_core import (
+    clean,
+    now_iso,
+    infer_work_mode,
+    infer_country,
+    clean_or_non,
+    classify_it_non_it,
+    categorize_role_taxonomy,   # ✅ ADD THIS
+)
 
 BASE = "https://www.jobsnepal.com"
 LISTING_URL = "https://www.jobsnepal.com/jobs?page={page}"
@@ -366,6 +374,15 @@ def parse_job_detail(driver, url: str) -> Optional[Dict]:
     category_primary = _category_primary(title or "", categories or "")
     typ = employment_type
 
+    tax = categorize_role_taxonomy(
+    title=title or "",
+    skills=skills or "",
+    position=position or "",
+    employment_type=employment_type or "",
+    description=desc_text or "",
+    industry=categories or "",
+)
+
     return {
         "job_id": clean_or_non(job_id, default="Non"),
         "title": clean_or_non(title, default="Non"),
@@ -373,7 +390,7 @@ def parse_job_detail(driver, url: str) -> Optional[Dict]:
         "company_link": clean_or_non(company_link, default="Non"),
 
         "location": clean_or_non(location, default="Non"),
-        "country": clean_or_non(country, default="Nepal"),  # ✅ will never be empty now
+        "country": clean_or_non(country, default="Nepal"),
         "posted_date": clean_or_non(posted_date, default="Non"),
         "num_applicants": clean_or_non(num_applicants, default="Non"),
 
@@ -387,7 +404,12 @@ def parse_job_detail(driver, url: str) -> Optional[Dict]:
         "commitment": clean_or_non(commitment, default="Non"),
         "skills": clean_or_non(skills, default="Non"),
 
-        "category_primary": clean_or_non(category_primary, default="Non-IT"),
+        # ✅ taxonomy outputs (single source of truth)
+        "category_primary": clean_or_non(tax.get("category_primary"), default="Non-IT"),
+        "domain_l1": clean_or_non(tax.get("domain_l1"), default="Non-IT-Other"),
+        "domain_l2": clean_or_non(tax.get("domain_l2"), default="Non"),
+        "domain_l3": clean_or_non(tax.get("domain_l3"), default="Non"),
+        "tax_confidence": clean_or_non(str(tax.get("tax_confidence", 0.35)), default="0.35"),
 
         "job_url": url,
         "source": "jobsnepal",

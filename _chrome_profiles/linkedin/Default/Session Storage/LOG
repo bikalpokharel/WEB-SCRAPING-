@@ -1,3 +1,6 @@
-2026/02/19-18:29:17.937 2611da Reusing MANIFEST /Users/bikal/Data_scraping/_chrome_profiles/linkedin/Default/Session Storage/MANIFEST-000001
-2026/02/19-18:29:17.938 2611da Recovering log #10
-2026/02/19-18:29:17.939 2611da Reusing old log /Users/bikal/Data_scraping/_chrome_profiles/linkedin/Default/Session Storage/000010.log 
+2026/02/25-17:55:59.244 1129a1 Reusing MANIFEST /Users/bikal/Data_scraping/_chrome_profiles/linkedin/Default/Session Storage/MANIFEST-000001
+2026/02/25-17:55:59.245 1129a1 Recovering log #41
+2026/02/25-17:55:59.246 1129a1 Reusing old log /Users/bikal/Data_scraping/_chrome_profiles/linkedin/Default/Session Storage/000041.log 
+2026/02/25-17:56:10.437 112bb9 Level-0 table #46: started
+2026/02/25-17:56:10.447 112bb9 Level-0 table #46: 35985 bytes OK
+2026/02/25-17:56:10.450 112bb9 Delete type=0 #41

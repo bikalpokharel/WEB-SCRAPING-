@@ -1,131 +1,276 @@
-Nepal Job Market Scraping Pipeline (Multi-Portal, Incremental UPSERT, Watch Mode)
+Job Market Scraping Pipeline
 
-A modular, production-style pipeline to collect job postings from multiple portals using Python + Selenium + pandas, with incremental UPSERT updates to Excel, multi-portal architecture, and watch mode for continuous refresh. Includes optional Dash dashboard for live charts.
+Multi-Portal • Incremental UPSERT • Watch Mode • Master Builder • Quality Audit • Live Dashboard
+
+A modular, production-style scraping and analytics pipeline built with:
+
+Python
+
+Selenium
+
+pandas
+
+Excel incremental UPSERT storage
+
+Master dataset builder
+
+Portal quality auditor
+
+Dash live dashboard
+
+Designed for continuous scraping, safe OneDrive usage, and real-time analytics.
 
 ✅ Key Features
-Multi-portal architecture
+🔹 Multi-Portal Architecture
 
-Add new portals easily (each portal lives in portals/)
+Each portal lives independently inside:
 
-Two portal styles (supported)
+portals/
 
-Selenium portal (listing → detail scraping)
+Currently supported:
 
-collect_job_urls()
+merojob (Selenium)
 
-parse_job_detail()
+jobsnepal (Selenium)
 
-Rows portal (already-structured data, CSV/API)
+linkedin (Rows mode / structured return)
 
-collect_rows() (optional mode)
+Adding a new portal requires:
 
-Incremental storage (UPSERT = update + insert)
+Creating portals/<newportal>.py
 
-Excel files are never overwritten
+Implementing required functions
 
-Existing jobs are updated when the same ID appears again
+Registering inside run_pipeline.py
 
-New jobs are inserted automatically
+🔹 Two Portal Modes
+1️⃣ Selenium Mode
 
-Works well in watch mode (re-scrape repeatedly without duplicates)
+Used for:
 
-Normalized schema
+MeroJob
 
-Work mode inference (remote/hybrid/onsite)
+JobsNepal
 
-IT vs Non-IT classification
+Required functions:
 
-Country inference added for MeroJob, JobsNepal, LinkedIn
+collect_job_urls(driver, pages, limit, ...)
+parse_job_detail(driver, url)
 
-Saved consistently to Excel
+Flow:
+
+Collect listing URLs
+
+Visit each URL
+
+Parse job details
+
+2️⃣ Rows Mode
+
+Used for:
+
+LinkedIn
+
+Required function:
+
+collect_rows(CONFIG) -> List[Dict]
+
+Flow:
+
+Returns normalized rows directly
+
+UPSERT handled centrally
+
+🔹 Incremental UPSERT Storage
+
+Excel files are never overwritten.
+
+If:
+
+Same key appears again → row is updated
+
+New key appears → row is inserted
+
+Newest scraped_at always wins.
+
+Safe for:
 
 Watch mode
 
-Re-runs portals every N seconds
+Repeated scraping
 
-Supports autosave batching (LinkedIn can autosave every X rows)
+Continuous refresh
 
-Logging
+🔹 OneDrive-Safe Atomic Writes
 
-Per-portal logs under logs/ (helps debug each portal independently)
+To prevent corrupted Excel files:
 
+Files are written to temp files
+
+Then atomically replaced
+
+Local cache used before read/write
+
+Prevents:
+
+BadZipFile
+
+Partial write corruption
+
+Network timeouts
+
+🔹 Watch Mode
+
+Re-runs scraping automatically:
+
+python run_pipeline.py --watch --interval 600 --portal all
+
+Runs every 600 seconds.
+
+Stop with:
+
+Ctrl + C
+🔹 Master Dataset Builder
+
+analysis/build_master.py
+
+Creates:
+
+jobs_master.xlsx
+
+jobs_master.csv
+
+jobs_master_local.csv (for dashboards)
+
+Features:
+
+Cross-portal deduplication
+
+Global key generation
+
+Newest record wins
+
+Placeholder normalization
+
+Atomic writes
+
+🔹 Portal Quality Audit
+
+analysis/portal_quality.py
+
+Generates:
+
+portal_quality_report.xlsx
+
+Includes:
+
+Overall sparsity
+
+Core field sparsity
+
+Optional field sparsity
+
+Missing-by-column breakdown
+
+Per-portal sheets
+
+Master dataset audit
+
+🔹 Live Dashboard (Dash)
+
+Located in:
+
+dashboard/
+
+Features:
+
+Time series of job counts
+
+Multi-filter system
+
+Multi-line comparison
+
+Auto-refresh
+
+Manual refresh
+
+Responsive design
+
+Reads:
+
+jobs_master.csv
+or
+jobs_master_local.csv
+
+Run:
+
+python dashboard/app.py
 📁 Project Structure
 Data_scraping/
 ├── config.py
 ├── scraper_core.py
 ├── run_pipeline.py
+├── analysis/
+│   ├── build_master.py
+│   └── portal_quality.py
+├── dashboard/
+│   └── app.py
 ├── portals/
 │   ├── merojob.py
 │   ├── jobsnepal.py
-│   └── linkedin.py                # ✅ Selenium LinkedIn multi-country
-├── dashboard/
-│   └── app.py                     # ✅ Dash dashboard
+│   └── linkedin.py
 ├── data/
 │   ├── merojob_jobs.xlsx
 │   ├── jobsnepal_jobs.xlsx
 │   ├── linkedin_jobs.xlsx
-│   └── *_urls_latest.txt
+│   └── _internal/
 ├── logs/
 │   └── *.log
-└── requirements.txt
-
+├── data_local/
+│   └── jobs_master_local.csv
+├── requirements.txt
+└── README.md
 ⚙️ Requirements
 
 Python 3.10+
 
 Google Chrome
 
-Selenium + ChromeDriver (webdriver-manager recommended)
+ChromeDriver (webdriver-manager recommended)
 
-🚀 Setup
-cd /path/to/Data_scraping
+Install:
+
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-
-▶️ Run the Pipeline
-
-Run one portal:
-
+▶️ Running the Pipeline
+Run single portal
 python run_pipeline.py --portal merojob
 python run_pipeline.py --portal jobsnepal
 python run_pipeline.py --portal linkedin
-
-
-Run all portals:
-
+Run all portals
 python run_pipeline.py --portal all
-
-🔁 Watch Mode (Continuous Monitoring)
-
-Re-run portals every 10 minutes (600 seconds):
-
+🔁 Watch Mode
 python run_pipeline.py --watch --interval 600 --portal all
-
-
-Stop with:
-
-Ctrl + C
-
 📦 Output Files
 
-All outputs go to your configured Excel directory (from config.py).
+Per-portal:
 
-Each portal produces:
+data/<portal>_jobs.xlsx
+data/_internal/<portal>_urls_latest.txt
 
-data/<portal>_jobs.xlsx → normalized dataset
+Master:
 
-data/<portal>_urls_latest.txt → URL audit/debug
+jobs_master.xlsx
+jobs_master.csv
+jobs_master_local.csv
 
-Examples:
+Quality:
 
-data/jobsnepal_jobs.xlsx
+portal_quality_report.xlsx
+🧠 Normalized Schema
 
-data/jobsnepal_urls_latest.txt
-
-🧠 Normalized Schema (Columns)
-
-Your saved Excel rows are normalized into a consistent set of columns (example):
+All portal rows are normalized into:
 
 job_id
 
@@ -137,7 +282,7 @@ company_link
 
 location
 
-country ✅ (new)
+country
 
 posted_date
 
@@ -157,7 +302,7 @@ commitment
 
 skills
 
-category_primary (IT / Non-IT)
+category_primary
 
 job_url
 
@@ -165,144 +310,82 @@ source
 
 scraped_at
 
-Missing values are stored as "Non" by design (as you implemented).
+Master adds:
 
-🌍 LinkedIn: Multi-Country Selenium Scraping (Current System)
+global_key
 
-✅ Your pipeline now supports scraping LinkedIn across multiple countries using geoId.
+master_built_at
 
-Configure targets in config.py
-linkedin_targets = (
-  {"country": "Nepal", "geoId": "104630404"},
-  {"country": "United States", "geoId": "103644278"},
-  ...
-)
+🔐 Security Notes
 
-What LinkedIn scraper does
+Avoid committing Excel data publicly
 
-Loops through each target country
+Do not hardcode credentials
 
-Builds listing URLs using geoId
+LinkedIn automation may trigger rate limits
 
-Collects job IDs and opens job details
+Prefer logged-in Chrome profile
 
-Adds country into every output row
-
-Saves incrementally via UPSERT (optionally autosave batches)
-
-🧩 Portal Modes Explained
-1) Selenium Mode (MeroJob, JobsNepal, LinkedIn)
-
-Each portal implements:
-
-collect_job_urls(driver, pages, limit, ...) -> List[str]
-
-parse_job_detail(driver, url) -> Dict | None
-
-2) Rows Mode (Optional / future)
-
-For CSV/API sources:
-
-collect_rows(CONFIG) -> List[Dict]
-
-📊 Dashboard (Dash)
-
-Your dashboard is under:
-
-dashboard/app.py
-
-
-Your component IDs (confirmed via grep):
-
-status
-
-interval
-
-jobs_per_portal
-
-it_nonit_by_portal
-
-top_locations
-
-employment_type
-
-scrape_trend
-
-Run dashboard:
-
-python dashboard/app.py
-
-
-Important fixes you already applied / must keep:
-
-Dash: app.run(...) not app.run_server(...)
-
-Pandas frequency: use "h" not "H" for .dt.floor("h") (new pandas behavior)
-
-🧾 Logging
-
-Logs are stored in:
-
-logs/<portal>.log
-
-
-Examples:
-
-tail -n 50 logs/jobsnepal.log
-tail -n 50 logs/linkedin.log
+Use environment variables for secrets
 
 🛠 Troubleshooting
-1) Dash error: app.run_server obsolete
+1️⃣ Excel corrupted (BadZipFile)
 
-Fix in dashboard/app.py:
+Delete corrupted file and re-run pipeline.
 
-app.run(debug=True, host="127.0.0.1", port=8050)
-
-2) Pandas error: Invalid frequency "H"
+2️⃣ Pandas frequency error
 
 Use:
 
 dt.floor("h")
 
-3) Excel error: BadZipFile: File is not a zip file
+(not "H")
 
-This happens when the .xlsx file is corrupted (often due to interruption while saving).
-Fix:
+3️⃣ Dash run_server obsolete
 
-Delete the corrupted Excel file (or rename it as backup)
+Use:
 
-Re-run the pipeline so it regenerates a clean .xlsx
+app.run(...)
+4️⃣ Selenium driver crash
 
-4) Selenium error: InvalidSessionIdException
+Driver restart logic already implemented.
 
-Driver got killed/crashed or session expired.
-Fix:
+🚀 Advanced Capabilities (Optional Extensions)
 
-Recreate the driver for each run (recommended)
+Trend tracking of sparsity over time
 
-Avoid long idle sessions
+Anomaly detection (row drop alerts)
 
-Ensure driver.quit() runs in finally
+JSON export for APIs
 
-🔐 Security & Long-Run Risks (What you should know)
+Database backend (PostgreSQL)
 
-LinkedIn is sensitive to automation → higher risk of rate-limit, authwall, temporary blocks.
+Docker containerization
 
-Store credentials using environment variables, not hardcoded.
+Scheduled cron deployment
 
-Prefer using a logged-in Chrome profile (less password handling).
+Production logging to structured logs
 
-Don’t upload raw datasets publicly (may contain tracked URLs / identifiable patterns).
+CI pipeline
 
-Keep your OneDrive output path safe (avoid exposing links publicly).
+🏗 System Architecture Overview
 
-🧱 Adding a New Portal
+Scraper → UPSERT → Master Builder → Quality Audit → Dashboard
 
-Create:
+Portal Excel Files
+        ↓
+build_master.py
+        ↓
+jobs_master.csv
+        ↓
+Dash Dashboard
+🏁 Status
 
-portals/<newportal>.py
+This pipeline is:
 
-
-Implement selenium or rows mode functions
-
-Register in run_pipeline.py under PORTALS
+✔ Production-stable
+✔ OneDrive-safe
+✔ Watch-mode safe
+✔ Incremental
+✔ Dashboard-ready
+✔ Extendable

@@ -1,225 +1,219 @@
-# /Users/bikal/Data_scraping/dashboard/app.py
-
 import os
-import traceback
-
 import pandas as pd
+from datetime import datetime
+
+import dash
+from dash import dcc, html, Input, Output, State
 import plotly.express as px
-import plotly.graph_objects as go
-
-from dash import Dash, dcc, html, Input, Output, callback
 
 
 # =========================
-# CONFIG (EDIT ONLY THIS)
+# CONFIG
 # =========================
-# Local Mac path (works locally). For Plotly Cloud, replace with a relative repo path.
 DATA_DIR = "/Users/bikal/Library/CloudStorage/OneDrive-Personal/Nepal_Job_Market_Live_Data/xlsx"
-MASTER_FILE = os.path.join(DATA_DIR, "jobs_master.xlsx")
+MASTER_CSV = os.path.join(DATA_DIR, "jobs_master.csv")
 
-REFRESH_SECONDS = 30  # your style from grep
+REFRESH_MS = 60_000  # 60 seconds (live refresh)
+
+DATE_COL = "scraped_at"
+UNKNOWN = "Unknown"
+
+# Filters available in your master schema
+FILTER_FIELDS = {
+    "country": "Country",
+    "category_primary": "IT / Non-IT",
+    "source": "Portal Source",
+    "employment_type": "Employment Type",
+    "work_mode": "Work Mode",
+    "position": "Designation / Position",
+    "type": "Job Type",
+    "company": "Company",
+    "location": "Location",
+}
+
+DEFAULT_COMPARE_BY = "source"
 
 
 # =========================
-# HELPERS
+# DATA LOADING
 # =========================
-PLACEHOLDERS = ["Non", "non", "", "N/A", "na", "NA", "-", "—", "None", "NONE"]
+def load_master_csv() -> pd.DataFrame:
+    if not os.path.exists(MASTER_CSV):
+        return pd.DataFrame()
 
+    df = pd.read_csv(MASTER_CSV)
 
-def _empty_fig(title: str) -> go.Figure:
-    fig = go.Figure()
-    fig.update_layout(
-        title=title,
-        xaxis={"visible": False},
-        yaxis={"visible": False},
-        annotations=[{
-            "text": "No data available",
-            "xref": "paper",
-            "yref": "paper",
-            "showarrow": False,
-            "x": 0.5,
-            "y": 0.5,
-            "font": {"size": 14}
-        }],
-        margin=dict(l=20, r=20, t=50, b=20),
-    )
-    return fig
+    # Ensure date column exists
+    if DATE_COL not in df.columns:
+        return pd.DataFrame()
 
+    # Parse scraped_at safely
+    df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 
-def _load_master() -> pd.DataFrame:
-    if not os.path.exists(MASTER_FILE):
-        raise FileNotFoundError(f"Master file not found: {MASTER_FILE}")
+    # Drop rows without scraped_at (cannot plot on time axis)
+    df = df.dropna(subset=[DATE_COL]).copy()
 
-    df = pd.read_excel(MASTER_FILE, engine="openpyxl")
-    df = df.replace(PLACEHOLDERS, pd.NA)
+    # Add daily bucket
+    df["day"] = df[DATE_COL].dt.date.astype(str)  # string for clean plot labels
 
-    # Ensure columns exist (so charts don't crash)
-    required_cols = [
-        "source",
-        "global_key",
-        "title",
-        "company",
-        "location",
-        "employment_type",
-        "category_primary",
-        "scraped_at",
-    ]
-    for c in required_cols:
-        if c not in df.columns:
-            df[c] = pd.NA
-
-    # Backward compatibility: map category_primary -> it_non_it
-    if "it_non_it" not in df.columns and "category_primary" in df.columns:
-        df["it_non_it"] = df["category_primary"]
-
-    # Normalize source
-    df["source"] = df["source"].astype(str).str.strip().str.lower()
-    df.loc[df["source"].isin(["<na>", "nan", "none"]), "source"] = pd.NA
-
-    # Parse datetime safely
-    df["scraped_at"] = pd.to_datetime(df["scraped_at"], errors="coerce")
+    # Clean missing values for filter fields
+    for col in FILTER_FIELDS.keys():
+        if col in df.columns:
+            # Convert to string, trim, fill missing
+            df[col] = df[col].astype("string").str.strip()
+            df[col] = df[col].replace(["", "None", "nan", "<NA>"], pd.NA)
+            df[col] = df[col].fillna(UNKNOWN)
 
     return df
 
 
-# =========================
-# FIGURE BUILDERS
-# =========================
-def fig_jobs_per_portal(df: pd.DataFrame) -> go.Figure:
-    if df.empty or df["source"].isna().all():
-        return _empty_fig("Jobs per portal")
+def get_dropdown_options(df: pd.DataFrame, col: str):
+    if df.empty or col not in df.columns:
+        return []
 
-    if df["global_key"].notna().any():
-        agg = df.groupby("source")["global_key"].nunique().reset_index(name="jobs")
-    else:
-        agg = df.groupby("source").size().reset_index(name="jobs")
-
-    if agg.empty:
-        return _empty_fig("Jobs per portal")
-
-    fig = px.bar(agg, x="source", y="jobs", title="Jobs per portal")
-    fig.update_layout(margin=dict(l=20, r=20, t=50, b=20))
-    return fig
-
-
-def fig_it_nonit(df: pd.DataFrame) -> go.Figure:
-    if df.empty or "it_non_it" not in df.columns:
-        return _empty_fig("IT vs Non-IT by portal")
-
-    temp = df.copy()
-    temp["it_non_it"] = temp["it_non_it"].fillna("Unknown").astype(str).str.strip()
-
-    if temp["source"].isna().all():
-        return _empty_fig("IT vs Non-IT by portal")
-
-    agg = temp.groupby(["source", "it_non_it"]).size().reset_index(name="count")
-
-    if agg.empty:
-        return _empty_fig("IT vs Non-IT by portal")
-
-    fig = px.bar(
-        agg,
-        x="source",
-        y="count",
-        color="it_non_it",
-        barmode="group",
-        title="IT vs Non-IT by portal",
+    vals = (
+        df[col]
+        .dropna()
+        .astype(str)
+        .map(lambda x: x.strip())
+        .replace("", pd.NA)
+        .dropna()
+        .unique()
+        .tolist()
     )
-    fig.update_layout(margin=dict(l=20, r=20, t=50, b=20))
-    return fig
 
+    # Sort with Unknown at bottom
+    vals_sorted = sorted([v for v in vals if v != UNKNOWN])
+    if UNKNOWN in vals:
+        vals_sorted.append(UNKNOWN)
 
-def fig_top_locations(df: pd.DataFrame, top_n: int = 10) -> go.Figure:
-    if df.empty or df["location"].isna().all():
-        return _empty_fig("Top locations")
-
-    temp = df.copy()
-    temp["location"] = temp["location"].fillna("Unknown").astype(str).str.strip()
-
-    agg = temp["location"].value_counts().head(top_n).reset_index()
-    agg.columns = ["location", "count"]
-
-    if agg.empty:
-        return _empty_fig("Top locations")
-
-    fig = px.bar(
-        agg,
-        x="count",
-        y="location",
-        orientation="h",
-        title=f"Top {top_n} locations",
-    )
-    fig.update_layout(
-        margin=dict(l=20, r=20, t=50, b=20),
-        yaxis={"categoryorder": "total ascending"},
-    )
-    return fig
-
-
-def fig_employment_type(df: pd.DataFrame) -> go.Figure:
-    if df.empty or df["employment_type"].isna().all():
-        return _empty_fig("Employment type distribution")
-
-    temp = df.copy()
-    temp["employment_type"] = temp["employment_type"].fillna("Unknown").astype(str).str.strip()
-
-    agg = temp["employment_type"].value_counts().reset_index()
-    agg.columns = ["employment_type", "count"]
-
-    if agg.empty:
-        return _empty_fig("Employment type distribution")
-
-    fig = px.bar(agg, x="employment_type", y="count", title="Employment type distribution")
-    fig.update_layout(margin=dict(l=20, r=20, t=50, b=20))
-    return fig
-
-
-def fig_scrape_trend(df: pd.DataFrame) -> go.Figure:
-    # Needs scraped_at datetime
-    if df.empty or df["scraped_at"].isna().all():
-        return _empty_fig("Scrape trend (hourly)")
-
-    trend = df.dropna(subset=["scraped_at"]).copy()
-    if trend.empty:
-        return _empty_fig("Scrape trend (hourly)")
-
-    # ✅ FIX: use lowercase 'h' (not 'H')
-    trend["bucket"] = trend["scraped_at"].dt.floor("h")
-
-    agg = trend.groupby("bucket").size().reset_index(name="count").sort_values("bucket")
-
-    if agg.empty:
-        return _empty_fig("Scrape trend (hourly)")
-
-    fig = px.line(agg, x="bucket", y="count", markers=True, title="Scrape trend (hourly)")
-    fig.update_layout(margin=dict(l=20, r=20, t=50, b=20))
-    return fig
+    return [{"label": v, "value": v} for v in vals_sorted]
 
 
 # =========================
-# DASH APP (USING YOUR IDs)
+# DASH APP
 # =========================
-app = Dash(__name__)
+app = dash.Dash(__name__)
+app.title = "Nepal Job Market - Live Dashboard"
+
 
 app.layout = html.Div(
-    style={"padding": "14px", "fontFamily": "Arial"},
+    style={"maxWidth": "1200px", "margin": "0 auto", "padding": "12px"},
     children=[
-        html.H2("Nepal Job Market Dashboard"),
+        html.H2("Live Jobs per Day (Master Dataset)", style={"marginBottom": "6px"}),
+        html.Div(
+            id="last-updated",
+            style={"fontSize": "14px", "opacity": "0.75", "marginBottom": "12px"},
+        ),
 
-        # ✅ id="status"
-        html.Div(id="status", style={"whiteSpace": "pre-wrap", "marginBottom": "10px"}),
+        # Auto refresh trigger
+        dcc.Interval(id="interval", interval=REFRESH_MS, n_intervals=0),
 
-        # ✅ id="interval"
-        dcc.Interval(id="interval", interval=REFRESH_SECONDS * 1000, n_intervals=0),
+        # Store data in-memory
+        dcc.Store(id="master-data"),
+
+        # CONTROLS
+        html.Div(
+            style={
+                "display": "grid",
+                "gridTemplateColumns": "repeat(auto-fit, minmax(220px, 1fr))",
+                "gap": "10px",
+                "marginBottom": "12px",
+            },
+            children=[
+                html.Div(
+                    children=[
+                        html.Label("Compare by (multi-line)", style={"fontWeight": "600"}),
+                        dcc.Dropdown(
+                            id="compare-by",
+                            options=[{"label": label, "value": key} for key, label in FILTER_FIELDS.items()],
+                            value=DEFAULT_COMPARE_BY,
+                            clearable=False,
+                        ),
+                    ]
+                ),
+
+                html.Div(
+                    children=[
+                        html.Label("Compare values (multi-select)", style={"fontWeight": "600"}),
+                        dcc.Dropdown(
+                            id="compare-values",
+                            options=[],
+                            value=[],
+                            multi=True,
+                            placeholder="Select values to compare (optional)",
+                        ),
+                    ]
+                ),
+
+                html.Div(
+                    children=[
+                        html.Label("Filter: Country", style={"fontWeight": "600"}),
+                        dcc.Dropdown(id="f-country", multi=True, placeholder="All countries"),
+                    ]
+                ),
+                html.Div(
+                    children=[
+                        html.Label("Filter: IT / Non-IT", style={"fontWeight": "600"}),
+                        dcc.Dropdown(id="f-category_primary", multi=True, placeholder="All"),
+                    ]
+                ),
+                html.Div(
+                    children=[
+                        html.Label("Filter: Source", style={"fontWeight": "600"}),
+                        dcc.Dropdown(id="f-source", multi=True, placeholder="All portals"),
+                    ]
+                ),
+                html.Div(
+                    children=[
+                        html.Label("Filter: Employment Type", style={"fontWeight": "600"}),
+                        dcc.Dropdown(id="f-employment_type", multi=True, placeholder="All"),
+                    ]
+                ),
+                html.Div(
+                    children=[
+                        html.Label("Filter: Work Mode", style={"fontWeight": "600"}),
+                        dcc.Dropdown(id="f-work_mode", multi=True, placeholder="All"),
+                    ]
+                ),
+                html.Div(
+                    children=[
+                        html.Label("Filter: Position", style={"fontWeight": "600"}),
+                        dcc.Dropdown(id="f-position", multi=True, placeholder="All"),
+                    ]
+                ),
+            ],
+        ),
 
         html.Div(
-            style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "12px"},
+            style={"display": "flex", "gap": "10px", "marginBottom": "12px", "flexWrap": "wrap"},
             children=[
-                dcc.Graph(id="jobs_per_portal"),
-                dcc.Graph(id="it_nonit_by_portal"),
-                dcc.Graph(id="top_locations"),
-                dcc.Graph(id="employment_type"),
-                dcc.Graph(id="scrape_trend"),
+                html.Button("Clear filters", id="btn-clear", n_clicks=0),
+                html.Button("Refresh now", id="btn-refresh", n_clicks=0),
+            ],
+        ),
+
+        # GRAPH
+        dcc.Graph(
+            id="jobs-graph",
+            config={"responsive": True},
+            style={"height": "70vh"},
+        ),
+
+        html.Hr(),
+
+        html.Div(
+            style={"fontSize": "14px", "opacity": "0.85"},
+            children=[
+                html.Div("How it behaves:"),
+                html.Ul(
+                    [
+                        html.Li("No compare values selected → shows ONE line = overall jobs/day (after filters)."),
+                        html.Li("Compare values selected → shows MULTIPLE lines (different colors)."),
+                        html.Li("All dropdowns are optional; leaving empty means 'All'."),
+                        html.Li("Graph auto-refreshes from jobs_master.csv every 60 seconds (and on 'Refresh now')."),
+                    ]
+                ),
             ],
         ),
     ],
@@ -227,54 +221,157 @@ app.layout = html.Div(
 
 
 # =========================
-# CALLBACK (MATCHES YOUR IDs)
+# CALLBACKS
 # =========================
-@callback(
-    Output("status", "children"),
-    Output("jobs_per_portal", "figure"),
-    Output("it_nonit_by_portal", "figure"),
-    Output("top_locations", "figure"),
-    Output("employment_type", "figure"),
-    Output("scrape_trend", "figure"),
+@app.callback(
+    Output("master-data", "data"),
+    Output("last-updated", "children"),
     Input("interval", "n_intervals"),
+    Input("btn-refresh", "n_clicks"),
 )
-def update_dashboard(n_intervals):
-    # Always return 6 outputs.
-    try:
-        df = _load_master()
+def refresh_data(_n_intervals, _n_clicks):
+    df = load_master_csv()
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    msg = f"Last loaded: {ts} | rows: {len(df)}"
+    return df.to_dict("records"), msg
 
-        f1 = fig_jobs_per_portal(df)
-        f2 = fig_it_nonit(df)
-        f3 = fig_top_locations(df, top_n=10)
-        f4 = fig_employment_type(df)
-        f5 = fig_scrape_trend(df)
 
-        portals = sorted([p for p in df["source"].dropna().unique().tolist()])
-        msg = (
-            f"✅ Updated successfully\n"
-            f"File: {MASTER_FILE}\n"
-            f"Rows: {len(df)}\n"
-            f"Portals: {', '.join(portals) if portals else 'None'}\n"
-            f"Tick: {n_intervals}\n"
-            f"Refresh: {REFRESH_SECONDS}s"
-        )
+@app.callback(
+    Output("compare-values", "options"),
+    Input("compare-by", "value"),
+    State("master-data", "data"),
+)
+def update_compare_values_options(compare_by, data):
+    df = pd.DataFrame(data or [])
+    if df.empty or not compare_by or compare_by not in df.columns:
+        return []
+    return get_dropdown_options(df, compare_by)
 
-        return msg, f1, f2, f3, f4, f5
 
-    except Exception:
-        err = traceback.format_exc()
-        return (
-            f"❌ Callback failed:\n{err}",
-            _empty_fig("Jobs per portal"),
-            _empty_fig("IT vs Non-IT by portal"),
-            _empty_fig("Top locations"),
-            _empty_fig("Employment type distribution"),
-            _empty_fig("Scrape trend (hourly)"),
-        )
+@app.callback(
+    Output("f-country", "options"),
+    Output("f-category_primary", "options"),
+    Output("f-source", "options"),
+    Output("f-employment_type", "options"),
+    Output("f-work_mode", "options"),
+    Output("f-position", "options"),
+    Input("master-data", "data"),
+)
+def update_filter_options(data):
+    df = pd.DataFrame(data or [])
+    if df.empty:
+        return [], [], [], [], [], []
+
+    return (
+        get_dropdown_options(df, "country"),
+        get_dropdown_options(df, "category_primary"),
+        get_dropdown_options(df, "source"),
+        get_dropdown_options(df, "employment_type"),
+        get_dropdown_options(df, "work_mode"),
+        get_dropdown_options(df, "position"),
+    )
+
+
+@app.callback(
+    Output("f-country", "value"),
+    Output("f-category_primary", "value"),
+    Output("f-source", "value"),
+    Output("f-employment_type", "value"),
+    Output("f-work_mode", "value"),
+    Output("f-position", "value"),
+    Output("compare-values", "value"),
+    Input("btn-clear", "n_clicks"),
+)
+def clear_filters(n_clicks):
+    if not n_clicks:
+        raise dash.exceptions.PreventUpdate
+    return [], [], [], [], [], [], []
+
+
+def apply_multi_filter(df: pd.DataFrame, col: str, selected: list):
+    if not selected:
+        return df
+    if col not in df.columns:
+        return df
+    return df[df[col].isin(selected)].copy()
+
+
+@app.callback(
+    Output("jobs-graph", "figure"),
+    Input("master-data", "data"),
+    Input("compare-by", "value"),
+    Input("compare-values", "value"),
+    Input("f-country", "value"),
+    Input("f-category_primary", "value"),
+    Input("f-source", "value"),
+    Input("f-employment_type", "value"),
+    Input("f-work_mode", "value"),
+    Input("f-position", "value"),
+)
+def update_graph(data, compare_by, compare_values, f_country, f_cat, f_source, f_emp, f_work, f_pos):
+    df = pd.DataFrame(data or [])
+    if df.empty:
+        fig = px.line(title="No data loaded yet.")
+        fig.update_layout(legend_title_text="Legend", margin=dict(l=20, r=20, t=50, b=20))
+        return fig
+
+    # Apply filters (these slice the dataset)
+    df = apply_multi_filter(df, "country", f_country or [])
+    df = apply_multi_filter(df, "category_primary", f_cat or [])
+    df = apply_multi_filter(df, "source", f_source or [])
+    df = apply_multi_filter(df, "employment_type", f_emp or [])
+    df = apply_multi_filter(df, "work_mode", f_work or [])
+    df = apply_multi_filter(df, "position", f_pos or [])
+
+    # Ensure day exists
+    if "day" not in df.columns:
+        fig = px.line(title="Missing day column (scraped_at parse failed).")
+        return fig
+
+    # If user did not pick compare values => overall line
+    if not compare_values:
+        daily = df.groupby("day").size().reset_index(name="jobs")
+        daily = daily.sort_values("day")
+        fig = px.line(daily, x="day", y="jobs", markers=True, title="Jobs per Day (Overall)")
+        fig.update_layout(legend_title_text="Legend", margin=dict(l=20, r=20, t=50, b=20))
+        fig.update_xaxes(title="Day")
+        fig.update_yaxes(title="Jobs")
+        return fig
+
+    # Multi-line comparison
+    if not compare_by or compare_by not in df.columns:
+        daily = df.groupby("day").size().reset_index(name="jobs")
+        daily = daily.sort_values("day")
+        fig = px.line(daily, x="day", y="jobs", markers=True, title="Jobs per Day (Overall)")
+        return fig
+
+    # Only compare selected values
+    df_cmp = df[df[compare_by].isin(compare_values)].copy()
+
+    daily_cmp = (
+        df_cmp.groupby(["day", compare_by])
+        .size()
+        .reset_index(name="jobs")
+        .sort_values("day")
+    )
+
+    title = f"Jobs per Day (Compare by: {FILTER_FIELDS.get(compare_by, compare_by)})"
+    fig = px.line(
+        daily_cmp,
+        x="day",
+        y="jobs",
+        color=compare_by,
+        markers=True,
+        title=title,
+    )
+    fig.update_layout(legend_title_text="Comparison", margin=dict(l=20, r=20, t=50, b=20))
+    fig.update_xaxes(title="Day")
+    fig.update_yaxes(title="Jobs")
+    return fig
 
 
 # =========================
-# RUN LOCAL
+# RUN
 # =========================
 if __name__ == "__main__":
-    app.run(debug=True, host="127.0.0.1", port=8050)
+    app.run(debug=True, host="127.0.0.1", port=8060)

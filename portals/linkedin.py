@@ -16,7 +16,15 @@ from selenium.common.exceptions import (
     WebDriverException,
 )
 
-from scraper_core import make_linkedin_driver, clean, now_iso, classify_it_non_it
+from scraper_core import (
+    clean,
+    now_iso,
+    infer_work_mode,
+    infer_country,
+    classify_it_non_it,
+    categorize_role_taxonomy, 
+    make_linkedin_driver,  # ✅ ADD THIS
+)
 
 logger = logging.getLogger("linkedin")
 
@@ -592,6 +600,22 @@ def linkedin_parse(config) -> List[Dict]:
 
                     job_url = f"https://www.linkedin.com/jobs/view/{job_id}/"
 
+
+                    # Build a better description signal for taxonomy
+                    desc_text = ""
+                    mt4 = _find_first(driver, ABOUT_JOB_MT4_SELECTORS)
+                    if mt4:
+                        desc_text = clean(mt4.text)
+
+                    tax = categorize_role_taxonomy(
+                        title=title or "",
+                        skills=skills or "",
+                        position=position or "",
+                        employment_type=employment_type or "",
+                        description=desc_text or (skills or ""),   # ✅ do NOT pass ""
+                        industry="",
+                    )
+
                     rows.append({
                         "job_id": job_id,
                         "title": title,
@@ -608,7 +632,11 @@ def linkedin_parse(config) -> List[Dict]:
                         "compensation": compensation,
                         "commitment": commitment,
                         "skills": skills,
-                        "category_primary": category_primary,
+                        "category_primary": tax["category_primary"],
+                        "domain_l1": tax["domain_l1"],
+                        "domain_l2": tax["domain_l2"],
+                        "domain_l3": tax["domain_l3"],
+                        "tax_confidence": tax["tax_confidence"],
                         "job_url": job_url,
                         "source": "linkedin",
                         "scraped_at": now_iso(),

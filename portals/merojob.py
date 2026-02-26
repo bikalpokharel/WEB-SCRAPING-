@@ -13,7 +13,14 @@ from selenium.common.exceptions import (
     InvalidSessionIdException,
 )
 
-from scraper_core import clean, now_iso, infer_work_mode, classify_it_non_it, infer_country
+from scraper_core import (
+    clean,
+    now_iso,
+    infer_work_mode,
+    infer_country,
+    classify_it_non_it,
+    categorize_role_taxonomy,   # ✅ ADD THIS
+)
 
 BASE = "https://merojob.com"
 SEARCH = f"{BASE}/search"
@@ -274,6 +281,15 @@ def parse_job_detail(driver, job_url: str) -> Optional[Dict]:
         full_text=page_text or "",
     )
 
+    tax = categorize_role_taxonomy(
+        title=title or "",
+        skills=skills or "",
+        position=position or "",
+        employment_type=employment_type or "",
+        description=page_text or "",
+        industry="",
+    )
+
     row = {
         "job_id": job_id,
         "title": title,
@@ -291,6 +307,11 @@ def parse_job_detail(driver, job_url: str) -> Optional[Dict]:
         "commitment": commitment,
         "skills": skills,
         "category_primary": category_primary,
+        "category_primary": tax["category_primary"],
+        "domain_l1": tax["domain_l1"],
+        "domain_l2": tax["domain_l2"],
+        "domain_l3": tax["domain_l3"],
+        "tax_confidence": tax["tax_confidence"],
         "job_url": job_url,
         "source": "merojob",
         "scraped_at": now_iso(),
@@ -303,6 +324,7 @@ def parse_job_detail(driver, job_url: str) -> Optional[Dict]:
         "posted_date", "num_applicants", "work_mode",
         "employment_type", "position", "type",
         "compensation", "commitment", "skills",
-        "category_primary", "job_url", "source", "scraped_at"
+        "category_primary", "job_url", "source", "scraped_at",
+        "domain_l1", "domain_l2", "domain_l3", "tax_confidence",
     ]
     return {k: row.get(k) for k in ordered_keys}

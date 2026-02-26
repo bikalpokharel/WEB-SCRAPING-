@@ -1,3 +1,6 @@
-2026/02/19-18:21:27.676 25e59e Reusing MANIFEST /Users/bikal/Data_scraping/_chrome_profiles/linkedin/Default/Local Storage/leveldb/MANIFEST-000001
-2026/02/19-18:21:27.678 25e59e Recovering log #12
-2026/02/19-18:21:27.679 25e59e Reusing old log /Users/bikal/Data_scraping/_chrome_profiles/linkedin/Default/Local Storage/leveldb/000012.log 
+2026/02/25-17:34:00.834 11002c Reusing MANIFEST /Users/bikal/Data_scraping/_chrome_profiles/linkedin/Default/Local Storage/leveldb/MANIFEST-000001
+2026/02/25-17:34:00.836 11002c Recovering log #36
+2026/02/25-17:34:00.837 11002c Reusing old log /Users/bikal/Data_scraping/_chrome_profiles/linkedin/Default/Local Storage/leveldb/000036.log 
+2026/02/25-17:37:00.968 11002f Level-0 table #41: started
+2026/02/25-17:37:00.975 11002f Level-0 table #41: 28200 bytes OK
+2026/02/25-17:37:00.983 11002f Delete type=0 #36

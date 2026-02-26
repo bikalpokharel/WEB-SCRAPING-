@@ -11,16 +11,21 @@ import pandas as pd
 # CONFIG
 # =========================
 DATA_DIR = "/Users/bikal/Library/CloudStorage/OneDrive-Personal/Nepal_Job_Market_Live_Data/xlsx"
-LOCAL_CACHE_DIR = "/Users/bikal/Data_scraping/data_local"  # local cache to avoid OneDrive read timeouts
+LOCAL_CACHE_DIR = "/Users/bikal/Data_scraping/data_local"
 REPORT_FILE = os.path.join(DATA_DIR, "portal_quality_report.xlsx")
 
 FILES = {
     "merojob": os.path.join(DATA_DIR, "merojob_jobs.xlsx"),
     "jobsnepal": os.path.join(DATA_DIR, "jobsnepal_jobs.xlsx"),
     "linkedin": os.path.join(DATA_DIR, "linkedin_jobs.xlsx"),
+    "master": os.path.join(DATA_DIR, "jobs_master.xlsx"),
 }
 
-# Define which columns are "core" vs "optional" for quality reporting
+PLACEHOLDERS = {
+    "Non", "non", "", "N/A", "na", "NA", "-", "—", "None", "NONE",
+    "<na>", "<NA>", "nan", "NaN", "NULL", "null"
+}
+
 CORE_COLS = [
     "job_id",
     "title",
@@ -32,20 +37,6 @@ CORE_COLS = [
     "scraped_at",
 ]
 
-# Optional columns (everything else will be treated as optional if present)
-OPTIONAL_COLS_HINT = [
-    "company_link",
-    "num_applicants",
-    "work_mode",
-    "employment_type",
-    "position",
-    "type",
-    "compensation",
-    "commitment",
-    "skills",
-    "category_primary",
-]
-
 
 # =========================
 # HELPERS
@@ -55,10 +46,6 @@ def _ensure_dir(path: str) -> None:
 
 
 def _read_excel_with_retry(path: str, retries: int = 3, pause: float = 1.5) -> pd.DataFrame:
-    """
-    Reads excel robustly (OneDrive sometimes times out).
-    Retries and raises last exception if still failing.
-    """
     last_err = None
     for attempt in range(1, retries + 1):
         try:
@@ -71,18 +58,28 @@ def _read_excel_with_retry(path: str, retries: int = 3, pause: float = 1.5) -> p
 
 
 def _copy_to_local_cache(src_path: str, cache_dir: str) -> Optional[str]:
-    """
-    Copies file into local cache and returns cached path.
-    Returns None if copy fails.
-    """
     try:
         _ensure_dir(cache_dir)
         dst_path = os.path.join(cache_dir, os.path.basename(src_path))
-        shutil.copy2(src_path, dst_path)
+        tmp = dst_path + f".tmp_{int(time.time())}"
+        shutil.copy2(src_path, tmp)
+        os.replace(tmp, dst_path)
         return dst_path
     except Exception as e:
         print(f"[WARN] Failed to copy to local cache: {src_path}\n  -> {e}")
         return None
+
+
+def _clean_placeholders(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df = df.replace(list(PLACEHOLDERS), pd.NA)
+
+    for col in df.columns:
+        if df[col].dtype == "object" or str(df[col].dtype).startswith("string"):
+            df[col] = df[col].astype("string").str.strip()
+            df[col] = df[col].replace("", pd.NA)
+
+    return df
 
 
 def _compute_sparsity(df: pd.DataFrame) -> float:
@@ -90,13 +87,6 @@ def _compute_sparsity(df: pd.DataFrame) -> float:
     if rows == 0 or cols == 0:
         return 0.0
     return (df.isna().sum().sum() / (rows * cols)) * 100.0
-
-
-def _compute_cols_above_threshold(df: pd.DataFrame, threshold_pct: float = 70.0) -> int:
-    if df.shape[1] == 0:
-        return 0
-    col_missing_pct = df.isna().mean() * 100.0
-    return int((col_missing_pct > threshold_pct).sum())
 
 
 def _subset_sparsity(df: pd.DataFrame, cols: List[str]) -> float:
@@ -111,26 +101,41 @@ def _subset_sparsity(df: pd.DataFrame, cols: List[str]) -> float:
 
 
 def _missing_by_column(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Returns per-column missing counts and %.
-    """
     total_rows = len(df)
     miss = df.isna().sum()
     pct = (miss / total_rows) * 100 if total_rows else 0
+
     out = pd.DataFrame({
         "missing_count": miss,
-        "missing_pct": pct,
-    }).sort_values("missing_pct", ascending=False)
+        "missing_pct": pct.round(2),
+    })
+    out = out.sort_values("missing_pct", ascending=False)
     out.index.name = "column"
     return out
+
+
+def _atomic_write_excel_multisheet(sheets: Dict[str, pd.DataFrame], out_path: str) -> None:
+    """
+    Atomic write for multi-sheet Excel.
+    Prevents corrupted Excel if interrupted.
+    """
+    _ensure_dir(os.path.dirname(out_path))
+    tmp_path = out_path + f".tmp_{int(time.time())}.xlsx"
+
+    with pd.ExcelWriter(tmp_path, engine="openpyxl") as writer:
+        for sheet_name, df in sheets.items():
+            sheet_clean = sheet_name[:31]  # Excel sheet limit
+            df.to_excel(writer, sheet_name=sheet_clean, index=True if df.index.name else False)
+
+    os.replace(tmp_path, out_path)
 
 
 # =========================
 # MAIN
 # =========================
 def main():
-    print("\n📊 PORTAL QUALITY SUMMARY")
-    print("=" * 60)
+    print("\n📊 PORTAL QUALITY SUMMARY (recalculated every run)")
+    print("=" * 70)
 
     summary_rows = []
     per_portal_missing_tables: Dict[str, pd.DataFrame] = {}
@@ -140,31 +145,27 @@ def main():
             print(f"\n❌ Missing file for {portal}: {path}")
             continue
 
-        # 1) Try reading directly (OneDrive can timeout)
         try:
-            df = _read_excel_with_retry(path, retries=3, pause=1.5)
+            df = _read_excel_with_retry(path)
         except Exception as e:
             print(f"\n[WARN] Direct read failed for {portal}: {e}")
-            # 2) Fallback: copy to local cache then read
             cached = _copy_to_local_cache(path, LOCAL_CACHE_DIR)
             if not cached:
-                print(f"❌ Could not read {portal} (direct+cache failed). Skipping.")
+                print(f"❌ Could not read {portal}. Skipping.")
                 continue
-            df = _read_excel_with_retry(cached, retries=3, pause=1.0)
+            df = _read_excel_with_retry(cached)
 
-        # Normalize placeholders to NA
-        df = df.replace(["Non", "non", ""], pd.NA)
+        df = _clean_placeholders(df)
 
         rows, cols = df.shape
         overall = _compute_sparsity(df)
-
-        # core vs optional
         core = _subset_sparsity(df, CORE_COLS)
-        # optional columns = present columns minus core (and keep hint ordering)
-        present_optional = [c for c in df.columns if c not in CORE_COLS]
-        optional = _subset_sparsity(df, present_optional)
 
-        above_70 = _compute_cols_above_threshold(df, threshold_pct=70.0)
+        optional_cols = [c for c in df.columns if c not in CORE_COLS]
+        optional = _subset_sparsity(df, optional_cols)
+
+        col_missing_pct = df.isna().mean() * 100 if cols else pd.Series([])
+        above_70 = int((col_missing_pct > 70).sum()) if cols else 0
 
         summary_rows.append({
             "portal": portal,
@@ -174,6 +175,7 @@ def main():
             "core_sparsity_%": round(core, 2),
             "optional_sparsity_%": round(optional, 2),
             "columns_above_70%_missing": above_70,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
         })
 
         per_portal_missing_tables[portal] = _missing_by_column(df)
@@ -186,26 +188,23 @@ def main():
 
     print(summary_df.to_string(index=False))
 
-    # Save report with multiple sheets
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    with pd.ExcelWriter(REPORT_FILE, engine="openpyxl") as writer:
-        summary_df.to_excel(writer, sheet_name="summary", index=False)
+    # Prepare sheets
+    sheets = {
+        "summary": summary_df
+    }
 
-        # Each portal: missing-by-column
-        for portal, miss_df in per_portal_missing_tables.items():
-            sheet = f"{portal}_missing"
-            # Excel sheet name limit: 31 chars
-            sheet = sheet[:31]
-            miss_df.to_excel(writer, sheet_name=sheet)
+    for portal, miss_df in per_portal_missing_tables.items():
+        sheets[f"{portal}_missing"] = miss_df
 
-        # metadata sheet
-        meta = pd.DataFrame([{
-            "generated_at": ts,
-            "data_dir": DATA_DIR,
-            "local_cache_dir": LOCAL_CACHE_DIR,
-            "notes": "If OneDrive times out, script copies files to local cache and retries.",
-        }])
-        meta.to_excel(writer, sheet_name="meta", index=False)
+    sheets["meta"] = pd.DataFrame([{
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "data_dir": DATA_DIR,
+        "local_cache_dir": LOCAL_CACHE_DIR,
+        "notes": "Sparsity recalculated every run. Placeholders treated as missing.",
+    }])
+
+    # Atomic write
+    _atomic_write_excel_multisheet(sheets, REPORT_FILE)
 
     print("\n✅ Saved portal quality report to:")
     print(REPORT_FILE)
